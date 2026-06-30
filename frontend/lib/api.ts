@@ -3,7 +3,7 @@ import {
   BatchContextCheckRequest, BatchContextCheckResponse,
 } from './types';
 
-const API = 'http://localhost:8000';
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function detectRegex(req: DetectRequest): Promise<DetectResponse> {
   const res = await fetch(`${API}/detect`, {
