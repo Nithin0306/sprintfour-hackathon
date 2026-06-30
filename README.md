@@ -1,6 +1,6 @@
 # Conseal Redaction Pipeline
 
-**[Live Demo](https://sprintfour-hackathon.vercel.app/)**
+**[Live Demo](https://sprintfour-hackathon.vercel.app/)** | **[Project Writeup & Reasoning (PDF)](./Conseal_%20Problem%203.pdf)**
 
 > **Note:** The deployed page is an interactive mock demonstration of the final output phase of the redaction pipeline. It is pre-loaded with a dummy document to showcase the interactive verification and redaction workflow.
 
