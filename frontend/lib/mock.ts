@@ -13,29 +13,38 @@ import { Span } from "./types";
 //   - A date of birth
 // ---------------------------------------------------------------------------
 
-export const mockRawText = `Patient Intake Form — Confidential
+export const mockRawText = `JOHN DOE — SENIOR SOFTWARE ENGINEER
+Email: john.doe.87@gmail.com | Phone: (555) 123-4567 | SSN: 123-45-6789
+Location: San Francisco, CA | DOB: 05/12/1987
 
-Patient: Priya Sharma
-Date of Birth: 14/09/1987
-Contact: +91-98765-43210 (home) or (080) 234-5678 (work)
-Email: priya.sharma@cityhealth.in
-Room number: 4021
+SUMMARY
+Senior Software Engineer with 8+ years of experience. Previously at Amazon Health Partners and Microsoft. Specialized in distributed systems and NLP.
 
-Emergency Contact: Karna Mehta — karna@sprintfour.com
-Alternate Phone: 9876543210
+EXPERIENCE
+Amazon Health Partners — Software Engineer (2018 - 2021)
+- Developed critical infrastructure for patient data processing.
+- Worked closely with Dr. Arjun Iyer to integrate medical data APIs.
+- Maintained legacy databases for Dr. Arjun Iyer's clinic.
 
-Insurance ID / SSN: 532-74-8921
-Backup format SSN: 532 74 8921
+Microsoft — Junior Engineer (2015 - 2018)
+- Built internal tools using Node.js and React.
+- Managed server deployments with IP 192.168.1.105.
+- Handled billing integrations using test card 4111 1111 1111 1111.
 
-Card on file: 4111 1111 1111 1111
-Secondary card: 5500-0000-0000-0004
+EDUCATION
+University of California, Berkeley
+B.S. in Computer Science (2011 - 2015)
 
-IBAN (international transfer): GB29 NWBK 6016 1331 9268 19
-IP address of last login: 192.168.1.105
+REFERENCES
+Karna Mehta — Engineering Manager at Amazon Health Partners
+Contact: karna@sprintfour.com | +1 987-654-3210
+Dr. Arjun Iyer — Medical Consultant
+Contact: arjun.iyer@cityhealth.in
 
-Attending Physician: Dr. Arjun Iyer
-Clinic: Sprintfour Health, Bangalore
-Notes: Patient was referred by Amazon Health Partners. Treatment plan discussed.`;
+PERSONAL DETAILS
+Backup SSN record: 123 45 6789
+IBAN: GB29 NWBK 6016 1331 9268 19
+Secondary card: 5500-0000-0000-0004`;
 
 // ---------------------------------------------------------------------------
 // Hardcoded mock spans used as the initial state (before the regex scan runs).
@@ -49,10 +58,17 @@ function findSpan(
   type: string,
   source: string,
   confidence: number,
-  systemCritical: boolean
+  systemCritical: boolean,
+  occurrenceIndex: number = 0
 ): Span {
-  const startIndex = mockRawText.indexOf(textToFind);
-  if (startIndex === -1) throw new Error(`Span text not found: "${textToFind}"`);
+  let startIndex = -1;
+  let currentPos = 0;
+  for (let i = 0; i <= occurrenceIndex; i++) {
+    startIndex = mockRawText.indexOf(textToFind, currentPos);
+    if (startIndex === -1) throw new Error(`Span text not found: "${textToFind}" at occurrence ${i}`);
+    currentPos = startIndex + 1;
+  }
+  
   return {
     id,
     startIndex,
@@ -67,20 +83,24 @@ function findSpan(
 }
 
 export const mockSpans: Span[] = [
-  findSpan("s1", "Priya Sharma", "name", "llm", 0.95, false),
-  findSpan("s2", "+91-98765-43210", "phone", "regex", 0.99, true),
-  findSpan("s3", "priya.sharma@cityhealth.in", "email", "regex", 0.99, true),
-  findSpan("s4", "Karna Mehta", "name", "llm", 0.92, false),
-  findSpan("s5", "karna@sprintfour.com", "email", "regex", 0.99, true),
-  findSpan("s6", "532-74-8921", "ssn", "regex", 0.99, true),
-  findSpan("s7", "4111 1111 1111 1111", "credit_card", "regex", 0.99, true),
-  findSpan("s8", "Amazon", "organization", "llm", 0.45, true), // Tripwire! LLM flagged this but it's a false positive
+  findSpan("s1", "JOHN DOE", "name", "llm", 0.95, false),
+  findSpan("s2", "john.doe.87@gmail.com", "email", "regex", 0.99, true),
+  findSpan("s3", "(555) 123-4567", "phone", "regex", 0.99, true),
+  findSpan("s4", "123-45-6789", "ssn", "regex", 0.99, true),
+  findSpan("s5", "Amazon", "organization", "llm", 0.45, true, 0), // Tripwire! False positive
+  findSpan("s6", "Amazon", "organization", "llm", 0.45, true, 1),
+  findSpan("s7", "Amazon", "organization", "llm", 0.45, true, 2),
+  findSpan("s8", "Dr. Arjun Iyer", "name", "llm", 0.92, false, 0),
+  findSpan("s9", "Dr. Arjun Iyer", "name", "llm", 0.92, false, 1),
+  findSpan("s10", "Karna Mehta", "name", "llm", 0.88, false, 0),
   // Intentionally missed by the mock tool (will be caught by real regex scan):
-  // - (080) 234-5678
-  // - 9876543210
-  // - 532 74 8921
+  // - +1 987-654-3210
+  // - 123 45 6789
   // - 5500-0000-0000-0004
   // - GB29 NWBK 6016 1331 9268 19
   // - 192.168.1.105
-  // - 14/09/1987
+  // - 05/12/1987
+  // - 4111 1111 1111 1111
+  // - arjun.iyer@cityhealth.in
+  // - karna@sprintfour.com
 ];

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import DocumentViewer from "@/components/DocumentViewer";
 import XRayToggle from "@/components/XRayToggle";
 import ContextPanel from "@/components/ContextPanel";
@@ -10,14 +10,30 @@ import { Span } from "@/lib/types";
 
 type ScanState = "idle" | "scanning" | "done" | "error";
 
+/** Merge newSpans into existing spans:
+ *  - regex source always wins on overlapping ranges
+ *  - existing spans that don't overlap are preserved
+ */
+function mergeSpans(existing: Span[], incoming: Span[]): Span[] {
+  // Drop any existing span that overlaps with an incoming one
+  const kept = existing.filter(
+    (e) =>
+      !incoming.some(
+        (n) => n.startIndex < e.endIndex && n.endIndex > e.startIndex
+      )
+  );
+  return [...kept, ...incoming].sort((a, b) => a.startIndex - b.startIndex);
+}
+
 export default function Home() {
   const [isXRayMode, setIsXRayMode] = useState(true);
-  
+  const [isFinalized, setIsFinalized] = useState(false);
+
   // History Stack for Undo/Redo
   const [history, setHistory] = useState<Span[][]>([mockSpans]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const spans = history[historyIndex];
-  
+
   function pushHistory(newSpans: Span[]) {
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(newSpans);
@@ -32,22 +48,28 @@ export default function Home() {
   function handleRedo() {
     if (historyIndex < history.length - 1) setHistoryIndex(historyIndex + 1);
   }
+
   const [scanState, setScanState] = useState<ScanState>("idle");
-  const [scanStats, setScanStats] = useState<{ found: number; diff: number } | null>(null);
+  const [scanStats, setScanStats] = useState<{ found: number; newCount: number } | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
 
-  // Word queue for the context panel
+  // Word queues for the context panel
   const [wordQueue, setWordQueue] = useState<string[]>([]);
+  const [unredactQueue, setUnredactQueue] = useState<string[]>([]);
+
 
   async function runRegexScan() {
     setScanState("scanning");
     setScanStats(null);
     setScanError(null);
-    const prev = spans.length;
     try {
       const res = await detectRegex({ text: mockRawText });
-      pushHistory(res.spans);
-      setScanStats({ found: res.spans.length, diff: res.spans.length - prev });
+      // FIX: merge into current spans instead of replacing
+      const current = history[historyIndex];
+      const merged = mergeSpans(current, res.spans);
+      const newCount = merged.length - current.length;
+      pushHistory(merged);
+      setScanStats({ found: merged.length, newCount });
       setScanState("done");
     } catch (e: unknown) {
       setScanError(e instanceof Error ? e.message : "Unknown error");
@@ -62,32 +84,56 @@ export default function Home() {
     setScanStats(null);
     setScanError(null);
     setWordQueue([]);
+    setUnredactQueue([]);
+    setIsFinalized(false);
   }
 
   const MAX_QUEUE_SIZE = 5;
 
-  function handleTextSelect(text: string) {
-    const trimmed = text.trim();
-    if (!trimmed || trimmed.length < 2) return;
-    
-    setWordQueue((prev) => {
-      if (prev.includes(trimmed)) return prev;
-      if (prev.length >= MAX_QUEUE_SIZE) {
-        alert("You can only queue up to 5 words at a time. Please run the AI Check on these first.");
-        return prev;
+  const handleTextSelect = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || trimmed.length < 2) return;
+
+      // Check if it's already a redacted span
+      const isCurrentlyRedacted = spans.some(
+        (s) =>
+          s.text.toLowerCase() === trimmed.toLowerCase() &&
+          s.status !== "safe"
+      );
+
+      if (isCurrentlyRedacted) {
+        setUnredactQueue((prev) => {
+          if (prev.includes(trimmed)) return prev;
+          return [...prev, trimmed];
+        });
+        return;
       }
-      return [...prev, trimmed];
-    });
-  }
+
+      setWordQueue((prev) => {
+        if (prev.includes(trimmed)) return prev;
+        if (prev.length >= MAX_QUEUE_SIZE) {
+          alert("You can only queue up to 5 words at a time. Please run the AI Check on these first.");
+          return prev;
+        }
+        return [...prev, trimmed];
+      });
+    },
+    [spans]
+  );
 
   function handleRemoveFromQueue(word: string) {
     setWordQueue((prev) => prev.filter((w) => w !== word));
   }
 
+  function handleRemoveFromUnredactQueue(word: string) {
+    setUnredactQueue((prev) => prev.filter((w) => w !== word));
+  }
+
   function handleUpdateSpans(spansToAdd: Span[], spanIdsToRemove: string[]) {
     const current = history[historyIndex];
     let next = current.filter((s) => !spanIdsToRemove.includes(s.id));
-    
+
     // Remove overlaps for the new spans
     next = next.filter(
       (existing) =>
@@ -95,9 +141,40 @@ export default function Home() {
           (ns) => ns.startIndex < existing.endIndex && ns.endIndex > existing.startIndex
         )
     );
-    
+
     next = [...next, ...spansToAdd].sort((a, b) => a.startIndex - b.startIndex);
     pushHistory(next);
+  }
+
+  // Phase 3: Mark all occurrences of a word as safe (false positive)
+  function handleMarkSafe(text: string) {
+    const lower = text.toLowerCase();
+    const next = spans.map((s) =>
+      s.text.toLowerCase() === lower ? { ...s, status: "safe" } : s
+    );
+    pushHistory(next);
+    // Remove from unredact queue if it was there
+    setUnredactQueue((prev) => prev.filter((w) => w.toLowerCase() !== lower));
+  }
+
+  // Phase 3: Mark all occurrences of a word as redacted (approved)
+  function handleMarkRedacted(text: string) {
+    const lower = text.toLowerCase();
+    const next = spans.map((s) =>
+      s.text.toLowerCase() === lower ? { ...s, status: "redacted" } : s
+    );
+    pushHistory(next);
+  }
+
+  // Phase 3: Finalize — convert all redacted/approved to finalized
+  function handleFinalize() {
+    const next = spans.map((s) =>
+      s.status === "suggested" || s.status === "redacted" || s.status === "approved"
+        ? { ...s, status: "finalized" }
+        : s
+    );
+    pushHistory(next);
+    setIsFinalized(true);
   }
 
   const isScanning = scanState === "scanning";
@@ -148,15 +225,14 @@ export default function Home() {
               <p className="text-xs text-zinc-500">Phone, email, SSN, card, IBAN, IP, date — instant, no API cost</p>
             </div>
 
-            {/* Inline stats */}
             {scanState === "done" && scanStats && (
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded-md bg-emerald-950 text-emerald-400 border border-emerald-800 text-xs">
-                  {scanStats.found} spans
+                  {scanStats.found} total
                 </span>
-                {scanStats.diff > 0 && (
+                {scanStats.newCount > 0 && (
                   <span className="px-2 py-0.5 rounded-md bg-amber-950 text-amber-400 border border-amber-800 text-xs">
-                    +{scanStats.diff}
+                    +{scanStats.newCount} new
                   </span>
                 )}
                 <button
@@ -181,13 +257,14 @@ export default function Home() {
           </div>
         </div>
 
+
         {/* Hint */}
-        {wordQueue.length === 0 && (
+        {wordQueue.length === 0 && unredactQueue.length === 0 && (
           <p className="text-xs text-zinc-700 mb-4 flex items-center gap-1.5">
             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
             </svg>
-            Select any word or phrase in the document to add it to the AI queue on the right
+            Select plain text to queue for AI check · Click a highlighted span to mark safe or redact all occurrences
           </p>
         )}
 
@@ -202,17 +279,22 @@ export default function Home() {
                   <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80" />
                   <div className="w-2.5 h-2.5 rounded-full bg-green-500/80" />
                 </div>
-                <span className="text-xs font-mono text-zinc-400">patient_intake_form.txt</span>
+                <span className="text-xs font-mono text-zinc-400">resume_john_doe.txt</span>
               </div>
-              <span className="text-xs text-zinc-600">
-                {spans.length} span{spans.length !== 1 ? "s" : ""}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-zinc-600">
+                  {spans.filter((s) => s.status !== "safe").length} active ·{" "}
+                  {spans.filter((s) => s.status === "safe").length} safe
+                </span>
+              </div>
             </div>
             <DocumentViewer
               rawText={mockRawText}
               spans={spans}
               isXRayMode={isXRayMode}
               onTextSelect={handleTextSelect}
+              onMarkSafe={handleMarkSafe}
+              onMarkRedacted={handleMarkRedacted}
             />
           </div>
 
@@ -221,23 +303,33 @@ export default function Home() {
             <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex flex-col" style={{ minHeight: "500px" }}>
               <ContextPanel
                 queue={wordQueue}
+                unredactQueue={unredactQueue}
                 documentText={mockRawText}
                 currentSpans={spans}
                 onRemoveFromQueue={handleRemoveFromQueue}
                 onClearQueue={() => setWordQueue([])}
+                onRemoveFromUnredactQueue={handleRemoveFromUnredactQueue}
                 onUpdateSpans={handleUpdateSpans}
               />
             </div>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex justify-end pt-6">
+        {/* Footer — Phase 3 Finalize */}
+        <div className="flex items-center justify-between pt-6 border-t border-zinc-800 mt-6">
+          <div className="text-xs text-zinc-600">
+            {isFinalized
+              ? "Document finalized"
+              : "Ready to finalize"}
+          </div>
           <button
-            disabled
-            className="px-6 py-2.5 bg-zinc-800 text-zinc-500 rounded-lg font-medium cursor-not-allowed opacity-50 text-sm"
+            onClick={handleFinalize}
+            disabled={isFinalized}
+            className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all
+              disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed
+              enabled:bg-rose-600 enabled:hover:bg-rose-500 enabled:text-white enabled:shadow-lg enabled:shadow-rose-900/40"
           >
-            Finalize Export
+            {isFinalized ? "✓ Exported" : "Finalize & Export"}
           </button>
         </div>
 
