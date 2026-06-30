@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import DocumentViewer from "@/components/DocumentViewer";
 import XRayToggle from "@/components/XRayToggle";
 import ContextPanel from "@/components/ContextPanel";
+import ConfidenceDashboard, { SessionMetrics } from "@/components/ConfidenceDashboard";
 import { mockRawText, mockSpans } from "@/lib/mock";
 import { detectRegex } from "@/lib/api";
 import { Span } from "@/lib/types";
@@ -28,6 +29,8 @@ function mergeSpans(existing: Span[], incoming: Span[]): Span[] {
 export default function Home() {
   const [isXRayMode, setIsXRayMode] = useState(true);
   const [isFinalized, setIsFinalized] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
+  const [sessionMetrics, setSessionMetrics] = useState<SessionMetrics | null>(null);
 
   // History Stack for Undo/Redo
   const [history, setHistory] = useState<Span[][]>([mockSpans]);
@@ -216,9 +219,35 @@ export default function Home() {
     return result;
   }
 
-  // Phase 4: Finalize — lock state and trigger download
+  // Phase 4: Finalize — lock state, trigger download, and show dashboard
   function handleFinalize() {
     const htmlContent = generateRedactedHTML();
+
+    // Compute session metrics from current spans snapshot
+    const safeSpans = spans.filter((s) => s.status === "safe");
+    const activeSpans = spans.filter((s) => s.status !== "safe");
+    const regexSpans = activeSpans.filter((s) => s.source === "regex");
+    const mockSpansActive = activeSpans.filter(
+      (s) => s.source === "mock" || s.source === "string_match"
+    );
+    // Spans that were user-queued through AI check (not from initial system)
+    const userAdded = activeSpans.filter(
+      (s) => s.source !== "regex" && s.source !== "mock" && s.source !== "string_match"
+    );
+    const avgConf =
+      activeSpans.length > 0
+        ? activeSpans.reduce((sum, s) => sum + s.confidence, 0) / activeSpans.length
+        : 0.85;
+
+    const metrics: SessionMetrics = {
+      autoDetectedCount: mockSpansActive.length + regexSpans.length,
+      userAddedCount: userAdded.length,
+      regexCaughtCount: regexSpans.length,
+      falsePositivesFixed: safeSpans.length,
+      avgConfidence: avgConf,
+      totalRedacted: activeSpans.length,
+    };
+
     const next = spans.map((s) =>
       s.status === "suggested" || s.status === "redacted" || s.status === "approved"
         ? { ...s, status: "finalized" }
@@ -226,8 +255,10 @@ export default function Home() {
     );
     pushHistory(next);
     setIsFinalized(true);
+    setSessionMetrics(metrics);
+    setShowDashboard(true);
 
-    // Trigger browser download of the redacted document
+    // Trigger browser download
     const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -402,9 +433,25 @@ export default function Home() {
           >
             {isFinalized ? "✓ Exported" : "⬛ Finalize & Export"}
           </button>
+          {isFinalized && (
+            <button
+              onClick={() => setShowDashboard(true)}
+              className="px-4 py-2 rounded-lg text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-emerald-400 transition-colors"
+            >
+              📊 View Report
+            </button>
+          )}
         </div>
 
       </div>
+
+      {/* Confidence Dashboard Modal */}
+      {showDashboard && sessionMetrics && (
+        <ConfidenceDashboard
+          metrics={sessionMetrics}
+          onClose={() => setShowDashboard(false)}
+        />
+      )}
     </main>
   );
 }
