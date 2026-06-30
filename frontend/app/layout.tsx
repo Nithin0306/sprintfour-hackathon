@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Conseal Phase 0",
-  description: "Hackathon project",
+  title: "Conseal | Smart Redaction",
+  description: "AI-powered, interactive document redaction pipeline.",
 };
 
 export default function RootLayout({

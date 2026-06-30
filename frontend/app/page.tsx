@@ -177,7 +177,9 @@ export default function Home() {
 
   // Phase 4: Generate redacted HTML string
   function generateRedactedHTML(): string {
-    const sortedSpans = [...spans].sort((a, b) => a.startIndex - b.startIndex);
+    const sortedSpans = spans
+      .filter((s) => s.status !== "safe")
+      .sort((a, b) => a.startIndex - b.startIndex);
     let result = `<!DOCTYPE html>
 <html>
 <head>
@@ -186,7 +188,6 @@ export default function Home() {
 <style>
   body { font-family: serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #18181b; white-space: pre-wrap; }
   .redacted { background-color: #18181b; color: transparent; user-select: none; border-radius: 3px; }
-  .safe { text-decoration: line-through; background-color: #d1fae5; color: #71717a; border-radius: 3px; }
 </style>
 </head>
 <body>`;
@@ -202,11 +203,7 @@ export default function Home() {
       const spanText = mockRawText.slice(s.startIndex, s.endIndex)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-      if (s.status === "safe") {
-        result += `<span class="safe">${spanText}</span>`;
-      } else {
-        result += `<span class="redacted">${spanText}</span>`;
-      }
+      result += `<span class="redacted">${spanText}</span>`;
 
       cursor = s.endIndex;
     }
