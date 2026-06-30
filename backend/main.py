@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes import detect
+from routes import detect, context
 
-app = FastAPI()
+app = FastAPI(title="Conseal Redaction API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,6 +13,7 @@ app.add_middleware(
 )
 
 app.include_router(detect.router)
+app.include_router(context.router)
 
 @app.get("/ping")
 def ping():
