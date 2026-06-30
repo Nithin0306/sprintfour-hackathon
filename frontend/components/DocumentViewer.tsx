@@ -7,7 +7,7 @@ interface DocumentViewerProps {
   rawText: string;
   spans: Span[];
   isXRayMode: boolean;
-  onTextSelect?: (selection: string) => void;
+  onTextSelect?: (selection: string, startOffset: number) => void;
   onMarkSafe?: (text: string) => void;
   onMarkRedacted?: (text: string) => void;
 }
@@ -64,19 +64,42 @@ export default function DocumentViewer({
     });
   }
 
+  // Track whether the last mousedown was on a span — if so, skip text-select routing
+  const spanClickedRef = useRef(false);
+
   function handleMouseUp() {
     if (!onTextSelect) return;
+    if (spanClickedRef.current) {
+      spanClickedRef.current = false;
+      return;
+    }
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
     const selectedText = selection.toString().trim();
     if (selectedText.length < 2) return;
+
+    // Compute the character offset of the selection start within rawText
+    // by walking the data-offset attributes on the wrapping spans
+    let startOffset = 0;
+    try {
+      const range = selection.getRangeAt(0);
+      let node: Node | null = range.startContainer;
+      // Walk up to the nearest element with data-offset
+      while (node && !(node as Element).getAttribute) node = node.parentNode;
+      const el = node as Element | null;
+      const offsetAttr = el?.closest('[data-offset]')?.getAttribute('data-offset');
+      if (offsetAttr !== null && offsetAttr !== undefined) {
+        startOffset = parseInt(offsetAttr, 10) + range.startOffset;
+      }
+    } catch { /* ignore — use offset 0 as fallback */ }
+
     setPopover(null);
-    onTextSelect(selectedText);
+    onTextSelect(selectedText, startOffset);
   }
 
   function handleSpanClick(e: React.MouseEvent, span: Span, text: string) {
     e.stopPropagation();
-    // Don't show popover for safe spans in plain mode — they look like normal text
+    spanClickedRef.current = true;
     const rect = (e.target as HTMLElement).getBoundingClientRect();
     const containerRect = containerRef.current?.getBoundingClientRect();
     if (!containerRect) return;
@@ -210,7 +233,7 @@ export default function DocumentViewer({
             )}
             <button
               onClick={() => {
-                onTextSelect?.(popover.spanText);
+                if (onTextSelect) onTextSelect(popover.spanText, -1); // -1 = known span
                 closePopover();
               }}
               className="w-full py-1.5 text-xs rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"

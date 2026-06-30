@@ -91,18 +91,24 @@ export default function Home() {
   const MAX_QUEUE_SIZE = 5;
 
   const handleTextSelect = useCallback(
-    (text: string) => {
+    (text: string, startOffset: number) => {
       const trimmed = text.trim();
       if (!trimmed || trimmed.length < 2) return;
 
-      // Check if it's already a redacted span
-      const isCurrentlyRedacted = spans.some(
-        (s) =>
-          s.text.toLowerCase() === trimmed.toLowerCase() &&
-          s.status !== "safe"
-      );
+      // Route to unredact queue ONLY if the selection overlaps an active (non-safe) span.
+      // When startOffset === -1 it came from the popover "Queue for AI" button on a span,
+      // which means the user explicitly wants AI check, NOT unredact.
+      const selectionEnd = startOffset + trimmed.length;
+      const isOverlappingRedactedSpan =
+        startOffset >= 0 &&
+        spans.some(
+          (s) =>
+            s.status !== "safe" &&
+            s.startIndex < selectionEnd &&
+            s.endIndex > startOffset
+        );
 
-      if (isCurrentlyRedacted) {
+      if (isOverlappingRedactedSpan) {
         setUnredactQueue((prev) => {
           if (prev.includes(trimmed)) return prev;
           return [...prev, trimmed];
@@ -166,8 +172,53 @@ export default function Home() {
     pushHistory(next);
   }
 
-  // Phase 3: Finalize — convert all redacted/approved to finalized
+  // Phase 4: Generate redacted HTML string
+  function generateRedactedHTML(): string {
+    const sortedSpans = [...spans].sort((a, b) => a.startIndex - b.startIndex);
+    let result = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Redacted Document</title>
+<style>
+  body { font-family: serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #18181b; white-space: pre-wrap; }
+  .redacted { background-color: #18181b; color: transparent; user-select: none; border-radius: 3px; }
+  .safe { text-decoration: line-through; background-color: #d1fae5; color: #71717a; border-radius: 3px; }
+</style>
+</head>
+<body>`;
+
+    let cursor = 0;
+    for (const s of sortedSpans) {
+      if (s.startIndex < cursor) continue; // Skip overlaps
+      
+      const beforeText = mockRawText.slice(cursor, s.startIndex)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      result += beforeText;
+
+      const spanText = mockRawText.slice(s.startIndex, s.endIndex)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+      if (s.status === "safe") {
+        result += `<span class="safe">${spanText}</span>`;
+      } else {
+        result += `<span class="redacted">${spanText}</span>`;
+      }
+
+      cursor = s.endIndex;
+    }
+    
+    const afterText = mockRawText.slice(cursor)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    result += afterText;
+    result += `</body>\n</html>`;
+    
+    return result;
+  }
+
+  // Phase 4: Finalize — lock state and trigger download
   function handleFinalize() {
+    const htmlContent = generateRedactedHTML();
     const next = spans.map((s) =>
       s.status === "suggested" || s.status === "redacted" || s.status === "approved"
         ? { ...s, status: "finalized" }
@@ -175,6 +226,17 @@ export default function Home() {
     );
     pushHistory(next);
     setIsFinalized(true);
+
+    // Trigger browser download of the redacted document
+    const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "resume_john_doe_REDACTED.html";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   const isScanning = scanState === "scanning";
@@ -315,21 +377,30 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Footer — Phase 3 Finalize */}
-        <div className="flex items-center justify-between pt-6 border-t border-zinc-800 mt-6">
-          <div className="text-xs text-zinc-600">
-            {isFinalized
-              ? "Document finalized"
-              : "Ready to finalize"}
+        {/* Footer — Phase 4 Finalize & Export */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pt-6 border-t border-zinc-800 mt-6">
+          <div className="flex flex-col gap-1">
+            {isFinalized ? (
+              <p className="text-sm text-emerald-400 font-semibold">✓ Document finalized and downloaded</p>
+            ) : (
+              <p className="text-sm text-zinc-300 font-medium">Ready to finalize</p>
+            )}
+            <div className="flex items-center gap-3 text-xs text-zinc-500">
+              <span>{spans.filter((s) => s.status !== "safe" && s.status !== "finalized").length} spans to redact</span>
+              <span className="text-zinc-700">·</span>
+              <span className="text-emerald-600">{spans.filter((s) => s.status === "safe").length} marked safe</span>
+              <span className="text-zinc-700">·</span>
+              <span className="text-zinc-600">{spans.filter((s) => s.status === "finalized").length} finalized</span>
+            </div>
           </div>
           <button
             onClick={handleFinalize}
             disabled={isFinalized}
-            className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all
+            className="px-6 py-2.5 rounded-lg font-medium text-sm transition-all shrink-0
               disabled:bg-zinc-800 disabled:text-zinc-500 disabled:cursor-not-allowed
               enabled:bg-rose-600 enabled:hover:bg-rose-500 enabled:text-white enabled:shadow-lg enabled:shadow-rose-900/40"
           >
-            {isFinalized ? "✓ Exported" : "Finalize & Export"}
+            {isFinalized ? "✓ Exported" : "⬛ Finalize & Export"}
           </button>
         </div>
 

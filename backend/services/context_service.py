@@ -28,16 +28,19 @@ _WORD_WINDOW = 30
 # Increased from 100 to avoid truncated JSON responses
 _MAX_OUTPUT_TOKENS = 300
 
-_SYSTEM_PROMPT = """You are a PII classifier. Evaluate ONLY the word/phrase inside [brackets] in the sentence.
+_SYSTEM_PROMPT = """You are a strict PII (Personally Identifiable Information) classifier.
+Your ONLY job is to evaluate the word/phrase inside [brackets] in the sentence provided.
 
-RULES:
-- person_name: A real individual (patient, doctor, employee). Score 0.9-1.0
-- organization: Private clinic/hospital that could identify someone. Score 0.7-0.8
-- location: Specific address or private place. Score 0.6-0.8
-- not_pii: Generic noun, public brand (Amazon, Google), common city name. Score 0.0-0.3
+CLASSIFICATION RULES — apply in order:
+1. person_name (confidence 0.90-1.0): ANY individual human name — patient, doctor, employee, contact, or reference. This includes names with honorific prefixes (Dr., Mr., Mrs., Prof., etc.). "Arjun Iyer", "Dr. Arjun Iyer", "Karna Mehta" are ALL person_name PII.
+2. organization (confidence 0.65-0.80): A private clinic, small business, or company that could help identify a specific individual. Generic public brands (Google, Amazon, Microsoft, Apple) used in a general context are NOT PII.
+3. location (confidence 0.60-0.80): A specific street address, private building, or precise location that could identify someone. Generic city names alone are NOT PII.
+4. not_pii (confidence 0.0-0.3): Generic nouns, public brands, common city names, or anything that cannot uniquely identify a person.
 
-Return ONLY valid compact JSON on one line, no markdown, no prose:
-{"is_pii":true,"type":"person_name","confidence":0.95,"reason":"Patient name in medical record"}"""
+CRITICAL: When in doubt about a human name, always choose person_name. Names are ALWAYS PII.
+
+Return ONLY valid compact JSON on a single line, no markdown, no prose, no explanation:
+{"is_pii":true,"type":"person_name","confidence":0.95,"reason":"Doctor name in professional document"}"""
 
 
 def _build_context_window(text: str, selection: str, start_pos: int) -> str:
@@ -117,8 +120,16 @@ def run_context_check(text: str, selection: str) -> Dict[str, Any]:
     KMP finds all occurrences → 30-word window → one LLM call → verdict.
     """
     clean_sel = clean_entity(selection) or selection.strip()
+    original_sel = selection.strip()
 
-    positions = kmp_search(text, clean_sel)
+    # Try the original text first (preserves "Dr. Arjun Iyer" as-is),
+    # fall back to the cleaned version ("Arjun Iyer") if nothing found.
+    positions = kmp_search(text, original_sel)
+    search_term = original_sel
+    if not positions and clean_sel != original_sel:
+        positions = kmp_search(text, clean_sel)
+        search_term = clean_sel
+
     if not positions:
         return {
             "is_pii": False, "pii_type": "not_pii", "confidence": 0.0,
@@ -126,26 +137,26 @@ def run_context_check(text: str, selection: str) -> Dict[str, Any]:
             "occurrences": [],
         }
 
-    context_window = _build_context_window(text, clean_sel, positions[0])
+    context_window = _build_context_window(text, search_term, positions[0])
 
     try:
         llm = _build_llm()
         response = llm.invoke([
             SystemMessage(content=_SYSTEM_PROMPT),
-            HumanMessage(content=f'Sentence: "{context_window}"\nHighlighted: "{clean_sel}"'),
+            HumanMessage(content=f'Sentence: "{context_window}"\nHighlighted: "{original_sel}"'),
         ])
         raw_output = response.content if hasattr(response, "content") else str(response)
     except EnvironmentError:
         raise
     except Exception as e:
-        logger.error("LLM call failed for '%s': %s", clean_sel, e)
+        logger.error("LLM call failed for '%s': %s", original_sel, e)
         # Return a safe fallback instead of crashing
         return {
             "is_pii": False, "pii_type": "not_pii", "confidence": 0.0,
             "reason": f"LLM unavailable: {str(e)[:60]}",
             "context_window": context_window,
             "occurrences": [
-                {"startIndex": p, "endIndex": p + len(clean_sel), "text": text[p: p + len(clean_sel)]}
+                {"startIndex": p, "endIndex": p + len(search_term), "text": text[p: p + len(search_term)]}
                 for p in positions
             ],
         }
@@ -156,7 +167,7 @@ def run_context_check(text: str, selection: str) -> Dict[str, Any]:
         **verdict,
         "context_window": context_window,
         "occurrences": [
-            {"startIndex": p, "endIndex": p + len(clean_sel), "text": text[p: p + len(clean_sel)]}
+            {"startIndex": p, "endIndex": p + len(search_term), "text": text[p: p + len(search_term)]}
             for p in positions
         ],
     }
@@ -172,7 +183,14 @@ def run_batch_context_check(text: str, selections: List[str]) -> List[Dict[str, 
 
     for selection in selections:
         clean_sel = clean_entity(selection) or selection.strip()
-        positions = kmp_search(text, clean_sel)
+        original_sel = selection.strip()
+
+        # Try original text first, fall back to cleaned version
+        positions = kmp_search(text, original_sel)
+        search_term = original_sel
+        if not positions and clean_sel != original_sel:
+            positions = kmp_search(text, clean_sel)
+            search_term = clean_sel
 
         if not positions:
             results.append({
@@ -183,17 +201,17 @@ def run_batch_context_check(text: str, selections: List[str]) -> List[Dict[str, 
             })
             continue
 
-        context_window = _build_context_window(text, clean_sel, positions[0])
+        context_window = _build_context_window(text, search_term, positions[0])
 
         try:
             response = llm.invoke([
                 SystemMessage(content=_SYSTEM_PROMPT),
-                HumanMessage(content=f'Sentence: "{context_window}"\nHighlighted: "{clean_sel}"'),
+                HumanMessage(content=f'Sentence: "{context_window}"\nHighlighted: "{original_sel}"'),
             ])
             raw_output = response.content if hasattr(response, "content") else str(response)
             verdict = _parse_verdict(raw_output)
         except Exception as e:
-            logger.error("Batch LLM call failed for '%s': %s", clean_sel, e)
+            logger.error("Batch LLM call failed for '%s': %s", original_sel, e)
             verdict = {
                 "is_pii": False, "pii_type": "not_pii", "confidence": 0.0,
                 "reason": f"LLM error: {str(e)[:40]}",
@@ -204,7 +222,7 @@ def run_batch_context_check(text: str, selections: List[str]) -> List[Dict[str, 
             **verdict,
             "context_window": context_window,
             "occurrences": [
-                {"startIndex": p, "endIndex": p + len(clean_sel), "text": text[p: p + len(clean_sel)]}
+                {"startIndex": p, "endIndex": p + len(search_term), "text": text[p: p + len(search_term)]}
                 for p in positions
             ],
         })

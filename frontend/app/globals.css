@@ -42,14 +42,6 @@
 
   /* Finalized export state */
   .span-finalized {
-    @apply bg-zinc-900 text-transparent select-none rounded px-0.5;
-    font-size: 0;
-    letter-spacing: 0;
-  }
-  .span-finalized::after {
-    content: '████';
-    @apply text-zinc-900 text-sm font-mono;
-    font-size: 0.875rem;
-    letter-spacing: -0.02em;
+    @apply bg-zinc-900 text-transparent select-none rounded-sm;
   }
 }
